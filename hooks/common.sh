@@ -20,7 +20,7 @@ dotvault_script_dir() {
     *) dotvault_script_dir=./$dotvault_script_dir ;;
   esac
 
-  CDPATH= cd "$dotvault_script_dir" && pwd
+  CDPATH='' cd "$dotvault_script_dir" && pwd
 }
 
 DOTVAULT_HOOK_DIR=${DOTVAULT_HOOK_DIR:-$(dotvault_script_dir "$0")}

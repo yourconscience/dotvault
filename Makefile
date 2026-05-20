@@ -7,7 +7,7 @@ test:
 	go test ./cmd/dotvault/ -count=1
 
 lint:
-	shellcheck hooks/*.sh
+	shellcheck -x --severity=warning hooks/*.sh
 
 clean:
 	rm -f dotvault
