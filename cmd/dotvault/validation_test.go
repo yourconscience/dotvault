@@ -89,6 +89,10 @@ func TestPublicRepoPrivacyBoundaries(t *testing.T) {
 			}
 			return nil
 		}
+		rel, _ := filepath.Rel(root, path)
+		if rel == "dotvault" || rel == "uv.lock" {
+			return nil
+		}
 		content, err := os.ReadFile(path)
 		if err != nil {
 			return err

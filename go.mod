@@ -1,3 +1,3 @@
-module github.com/dotvault/dotvault
+module github.com/yourconscience/dotvault
 
 go 1.24

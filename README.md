@@ -24,6 +24,17 @@ Keep private content in the private vault, outside this public checkout. The tem
 - `skill/` contains a public agent skill surface and trigger-only eval prompts.
 - `cmd/dotvault/` implements the Go CLI and fixture-based tests.
 
+## Install
+
+```sh
+# From source
+make build          # produces ./dotvault
+make install        # copies to $GOPATH/bin or ~/go/bin
+
+# Or directly
+go install github.com/yourconscience/dotvault/cmd/dotvault@latest
+```
+
 ## CLI behavior
 
 The MVP CLI is implemented under `cmd/dotvault`:
