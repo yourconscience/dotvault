@@ -64,7 +64,7 @@ func run(args []string, getenv envLookup, stdout, stderr io.Writer) int {
 	case "export":
 		return runExport(args[1:], getenv, stdout, stderr)
 	case "sync":
-		return runPlannedCommand("sync", args[1:], printSyncHelp, stdout, stderr)
+		return runSync(args[1:], getenv, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "dotvault: unknown command %q\n\n", args[0])
 		printTopLevelHelp(stderr)
@@ -883,7 +883,7 @@ Commands:
 
 Environment:
   DOTVAULT_PATH selects the private vault path when --vault is omitted.
-  DOTVAULT_REMOTE and DOTVAULT_BRANCH are used by sync in later milestones.
+  DOTVAULT_REMOTE and DOTVAULT_BRANCH configure sync remote and branch.
   KNOWLEDGE_* variables are legacy fallbacks for migration compatibility.
 
 Safety:
