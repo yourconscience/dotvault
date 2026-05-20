@@ -236,42 +236,6 @@ func runExport(args []string, getenv envLookup, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runPlannedCommand(name string, args []string, printHelp func(io.Writer), stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		printHelp(stdout)
-	}
-
-	switch name {
-	case "import":
-		fs.String("from", "", "knowledge-style source path")
-		fs.String("vault", "", "dotvault destination path")
-		fs.Bool("apply", false, "apply the planned migration; default is dry-run")
-	case "export":
-		fs.String("vault", "", "dotvault source path")
-		fs.String("out", "", "safe output directory")
-	case "sync":
-		fs.String("vault", "", "dotvault git repository path")
-		fs.String("remote", "", "git remote name")
-		fs.String("branch", "", "git branch name")
-	}
-
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return 2
-	}
-	if len(args) == 0 || (len(args) == 1 && isHelpArg(args[0])) {
-		printHelp(stdout)
-		return 0
-	}
-
-	fmt.Fprintf(stderr, "dotvault %s is planned for a later milestone; use --help for the safety contract.\n", name)
-	return 2
-}
-
 type importPlan struct {
 	sourcePath string
 	vaultPath  string

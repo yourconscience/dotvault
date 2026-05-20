@@ -12,18 +12,32 @@ import (
 	"testing"
 )
 
-func runTestCLI(args []string, env map[string]string) (int, string, string) {
+func runTestCLI(t testing.TB, args []string, env map[string]string) (int, string, string) {
+	t.Helper()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	controlledEnv := controlledCLIEnv(t, env)
 	code := run(args, func(key string) (string, bool) {
-		value, ok := env[key]
+		value, ok := controlledEnv[key]
 		return value, ok
 	}, &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
 
+func controlledCLIEnv(t testing.TB, env map[string]string) map[string]string {
+	t.Helper()
+	controlledEnv := map[string]string{
+		"HOME":   t.TempDir(),
+		"TMPDIR": t.TempDir(),
+	}
+	for key, value := range env {
+		controlledEnv[key] = value
+	}
+	return controlledEnv
+}
+
 func TestTopLevelHelpListsCommands(t *testing.T) {
-	code, stdout, stderr := runTestCLI([]string{"--help"}, nil)
+	code, stdout, stderr := runTestCLI(t, []string{"--help"}, nil)
 	if code != 0 {
 		t.Fatalf("help exit code = %d, stderr = %q", code, stderr)
 	}
@@ -64,7 +78,7 @@ func TestSubcommandHelpDocumentsFlagsDefaultsAndSafety(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			code, stdout, stderr := runTestCLI(tt.args, nil)
+			code, stdout, stderr := runTestCLI(t, tt.args, nil)
 			if code != 0 {
 				t.Fatalf("%v exit code = %d, stderr = %q", tt.args, code, stderr)
 			}
@@ -82,7 +96,7 @@ func TestInitCreatesVaultLayoutAndConfigIdempotently(t *testing.T) {
 	vault := filepath.Join(t.TempDir(), "vault")
 	env := map[string]string{"HOME": home}
 
-	code, stdout, stderr := runTestCLI([]string{"init", "--vault", vault}, env)
+	code, stdout, stderr := runTestCLI(t, []string{"init", "--vault", vault}, env)
 	if code != 0 {
 		t.Fatalf("init exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -94,7 +108,7 @@ func TestInitCreatesVaultLayoutAndConfigIdempotently(t *testing.T) {
 		t.Fatalf("vaultPath = %#v, want %q", firstConfig["vaultPath"], mustAbs(t, vault))
 	}
 
-	code, stdout, stderr = runTestCLI([]string{"init", "--vault", vault}, env)
+	code, stdout, stderr = runTestCLI(t, []string{"init", "--vault", vault}, env)
 	if code != 0 {
 		t.Fatalf("second init exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -113,7 +127,7 @@ func TestInitUsesDOTVAULTPathEnvironment(t *testing.T) {
 		"DOTVAULT_PATH": vault,
 	}
 
-	code, stdout, stderr := runTestCLI([]string{"init"}, env)
+	code, stdout, stderr := runTestCLI(t, []string{"init"}, env)
 	if code != 0 {
 		t.Fatalf("init exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -124,7 +138,7 @@ func TestInitDoesNotCreateHomeSymlinkByDefault(t *testing.T) {
 	home := t.TempDir()
 	vault := filepath.Join(t.TempDir(), "vault")
 
-	code, stdout, stderr := runTestCLI([]string{"init", "--vault", vault}, map[string]string{"HOME": home})
+	code, stdout, stderr := runTestCLI(t, []string{"init", "--vault", vault}, map[string]string{"HOME": home})
 	if code != 0 {
 		t.Fatalf("init exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -141,7 +155,7 @@ func TestInitCreatesHomeSymlinkOnlyWhenSafe(t *testing.T) {
 	vault := filepath.Join(t.TempDir(), "vault")
 	env := map[string]string{"HOME": home}
 
-	code, stdout, stderr := runTestCLI([]string{"init", "--vault", vault, "--link-home"}, env)
+	code, stdout, stderr := runTestCLI(t, []string{"init", "--vault", vault, "--link-home"}, env)
 	if code != 0 {
 		t.Fatalf("init --link-home exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -161,7 +175,7 @@ func TestInitCreatesHomeSymlinkOnlyWhenSafe(t *testing.T) {
 		t.Fatalf("HOME/.vault target = %q, want %q", target, mustAbs(t, vault))
 	}
 
-	code, stdout, stderr = runTestCLI([]string{"init", "--vault", vault, "--link-home"}, env)
+	code, stdout, stderr = runTestCLI(t, []string{"init", "--vault", vault, "--link-home"}, env)
 	if code != 0 {
 		t.Fatalf("idempotent init --link-home exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -179,7 +193,7 @@ func TestInitRefusesUnsafeExistingHomeVault(t *testing.T) {
 			t.Fatalf("write existing HOME/.vault: %v", err)
 		}
 
-		code, _, stderr := runTestCLI([]string{"init", "--vault", vault, "--link-home"}, map[string]string{"HOME": home})
+		code, _, stderr := runTestCLI(t, []string{"init", "--vault", vault, "--link-home"}, map[string]string{"HOME": home})
 		if code == 0 {
 			t.Fatalf("init --link-home unexpectedly succeeded with existing file")
 		}
@@ -204,7 +218,7 @@ func TestInitRefusesUnsafeExistingHomeVault(t *testing.T) {
 			t.Fatalf("create existing HOME/.vault symlink: %v", err)
 		}
 
-		code, _, stderr := runTestCLI([]string{"init", "--vault", vault, "--link-home"}, map[string]string{"HOME": home})
+		code, _, stderr := runTestCLI(t, []string{"init", "--vault", vault, "--link-home"}, map[string]string{"HOME": home})
 		if code == 0 {
 			t.Fatalf("init --link-home unexpectedly succeeded with mismatched symlink")
 		}
@@ -225,7 +239,7 @@ func TestImportDryRunDoesNotMutateDestinationOrSource(t *testing.T) {
 	createKnowledgeFixture(t, source)
 	beforeSource := snapshotTree(t, source)
 
-	code, stdout, stderr := runTestCLI([]string{"import", "--from", source, "--vault", vault}, map[string]string{"HOME": t.TempDir()})
+	code, stdout, stderr := runTestCLI(t, []string{"import", "--from", source, "--vault", vault}, map[string]string{"HOME": t.TempDir()})
 	if code != 0 {
 		t.Fatalf("import dry-run exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -249,7 +263,7 @@ func TestImportApplyMapsAIToMemoryAndPreservesSource(t *testing.T) {
 	createKnowledgeFixture(t, source)
 	beforeSource := snapshotTree(t, source)
 
-	code, stdout, stderr := runTestCLI([]string{"import", "--from", source, "--vault", vault, "--apply"}, map[string]string{"HOME": t.TempDir()})
+	code, stdout, stderr := runTestCLI(t, []string{"import", "--from", source, "--vault", vault, "--apply"}, map[string]string{"HOME": t.TempDir()})
 	if code != 0 {
 		t.Fatalf("import --apply exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -273,7 +287,7 @@ func TestImportRefusesUnsafeStatesWithoutPartialDestination(t *testing.T) {
 	t.Run("missing source", func(t *testing.T) {
 		root := t.TempDir()
 		vault := filepath.Join(root, "vault")
-		code, _, stderr := runTestCLI([]string{"import", "--from", filepath.Join(root, "missing"), "--vault", vault, "--apply"}, nil)
+		code, _, stderr := runTestCLI(t, []string{"import", "--from", filepath.Join(root, "missing"), "--vault", vault, "--apply"}, nil)
 		if code == 0 {
 			t.Fatalf("import unexpectedly succeeded with missing source")
 		}
@@ -295,7 +309,7 @@ func TestImportRefusesUnsafeStatesWithoutPartialDestination(t *testing.T) {
 			t.Fatalf("write existing destination file: %v", err)
 		}
 
-		code, _, stderr := runTestCLI([]string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
+		code, _, stderr := runTestCLI(t, []string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
 		if code == 0 {
 			t.Fatalf("import unexpectedly succeeded with prepopulated destination")
 		}
@@ -319,7 +333,7 @@ func TestImportRefusesUnsafeStatesWithoutPartialDestination(t *testing.T) {
 			t.Fatalf("write dirty file: %v", err)
 		}
 
-		code, _, stderr := runTestCLI([]string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
+		code, _, stderr := runTestCLI(t, []string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
 		if code == 0 {
 			t.Fatalf("import unexpectedly succeeded with dirty git source")
 		}
@@ -344,7 +358,7 @@ func TestImportRefusesUnsafeStatesWithoutPartialDestination(t *testing.T) {
 			t.Fatalf("mkfifo %s: %v", fifo, err)
 		}
 
-		code, _, stderr := runTestCLI([]string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
+		code, _, stderr := runTestCLI(t, []string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
 		if code == 0 {
 			t.Fatalf("import unexpectedly succeeded with non-regular source entry")
 		}
@@ -361,13 +375,13 @@ func TestImportRefusesUnsafeStatesWithoutPartialDestination(t *testing.T) {
 		source := filepath.Join(root, "knowledge")
 		vault := filepath.Join(root, "vault")
 		createKnowledgeFixture(t, source)
-		code, stdout, stderr := runTestCLI([]string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
+		code, stdout, stderr := runTestCLI(t, []string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
 		if code != 0 {
 			t.Fatalf("first import --apply exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 		}
 		beforeVault := snapshotTree(t, vault)
 
-		code, _, stderr = runTestCLI([]string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
+		code, _, stderr = runTestCLI(t, []string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
 		if code == 0 {
 			t.Fatalf("idempotent rerun unexpectedly succeeded")
 		}
@@ -383,7 +397,7 @@ func TestImportRefusesDestinationInsideSource(t *testing.T) {
 	createKnowledgeFixture(t, source)
 	beforeSource := snapshotTree(t, source)
 
-	code, _, stderr := runTestCLI([]string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
+	code, _, stderr := runTestCLI(t, []string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
 	if code == 0 {
 		t.Fatalf("import unexpectedly succeeded with destination inside source")
 	}
@@ -406,7 +420,7 @@ func TestImportRefusesDestinationInsideSourceThroughSymlink(t *testing.T) {
 	}
 	beforeSource := snapshotTree(t, source)
 
-	code, _, stderr := runTestCLI([]string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
+	code, _, stderr := runTestCLI(t, []string{"import", "--from", source, "--vault", vault, "--apply"}, nil)
 	if code == 0 {
 		t.Fatalf("import unexpectedly succeeded with destination inside source through symlink")
 	}
@@ -421,7 +435,7 @@ func TestExportWritesTemplateOnlyAndExcludesPrivateSentinels(t *testing.T) {
 	createVaultWithPrivateSentinels(t, vault)
 	out := filepath.Join(root, "export")
 
-	code, stdout, stderr := runTestCLI([]string{"export", "--vault", vault, "--out", out}, map[string]string{"HOME": t.TempDir()})
+	code, stdout, stderr := runTestCLI(t, []string{"export", "--vault", vault, "--out", out}, map[string]string{"HOME": t.TempDir()})
 	if code != 0 {
 		t.Fatalf("export exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -462,7 +476,7 @@ func TestExportRefusesUnsafeOutputTargets(t *testing.T) {
 			t.Fatalf("write existing output file: %v", err)
 		}
 
-		code, _, stderr := runTestCLI([]string{"export", "--vault", vault, "--out", out}, nil)
+		code, _, stderr := runTestCLI(t, []string{"export", "--vault", vault, "--out", out}, nil)
 		if code == 0 {
 			t.Fatalf("export unexpectedly succeeded with non-empty output")
 		}
@@ -484,7 +498,7 @@ func TestExportRefusesUnsafeOutputTargets(t *testing.T) {
 			t.Fatalf("create output symlink: %v", err)
 		}
 
-		code, _, stderr := runTestCLI([]string{"export", "--vault", vault, "--out", out}, nil)
+		code, _, stderr := runTestCLI(t, []string{"export", "--vault", vault, "--out", out}, nil)
 		if code == 0 {
 			t.Fatalf("export unexpectedly succeeded with symlink output")
 		}
@@ -500,7 +514,7 @@ func TestExportRefusesUnsafeOutputTargets(t *testing.T) {
 		createVaultWithPrivateSentinels(t, vault)
 		out := filepath.Join(vault, "notes", "export")
 
-		code, _, stderr := runTestCLI([]string{"export", "--vault", vault, "--out", out}, nil)
+		code, _, stderr := runTestCLI(t, []string{"export", "--vault", vault, "--out", out}, nil)
 		if code == 0 {
 			t.Fatalf("export unexpectedly succeeded with output inside vault")
 		}

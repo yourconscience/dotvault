@@ -1,7 +1,7 @@
 [project]
 name = "dotvault"
 version = "0.0.0"
-description = "Public-safe dotvault hook and validation scaffolding"
+description = "Public-safe dotvault hook and validation surfaces"
 requires-python = ">=3.11"
 dependencies = []
 

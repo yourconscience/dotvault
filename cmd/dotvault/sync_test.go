@@ -13,7 +13,7 @@ func TestSyncStatusReportsWithoutMutationAndResolvesLegacyEnv(t *testing.T) {
 	vault := seedVaultFromLocalBareRemote(t, root, remote)
 
 	before := gitOutput(t, vault, "status", "--porcelain")
-	code, stdout, stderr := runTestCLI([]string{"sync", "status"}, map[string]string{
+	code, stdout, stderr := runTestCLI(t, []string{"sync", "status"}, map[string]string{
 		"HOME":             t.TempDir(),
 		"KNOWLEDGE_REPO":   vault,
 		"KNOWLEDGE_REMOTE": "origin",
@@ -40,7 +40,7 @@ func TestSyncPrefersDOTVAULTEnvOverLegacyKnowledgeEnv(t *testing.T) {
 	preferred := seedVaultFromLocalBareRemote(t, filepath.Join(root, "preferred-root"), preferredRemote)
 	legacy := seedVaultFromLocalBareRemote(t, filepath.Join(root, "legacy-root"), legacyRemote)
 
-	code, stdout, stderr := runTestCLI([]string{"sync", "status"}, map[string]string{
+	code, stdout, stderr := runTestCLI(t, []string{"sync", "status"}, map[string]string{
 		"HOME":            t.TempDir(),
 		"DOTVAULT_PATH":   preferred,
 		"DOTVAULT_REMOTE": "origin",
@@ -70,7 +70,7 @@ func TestSyncPullPushAndRunWithLocalBareRemote(t *testing.T) {
 	runGit(t, remoteWork, "commit", "-m", "remote change")
 	runGit(t, remoteWork, "push", "origin", "main")
 
-	code, stdout, stderr := runTestCLI([]string{"sync", "pull", "--vault", vault, "--remote", "origin", "--branch", "main"}, map[string]string{"HOME": t.TempDir()})
+	code, stdout, stderr := runTestCLI(t, []string{"sync", "pull", "--vault", vault, "--remote", "origin", "--branch", "main"}, map[string]string{"HOME": t.TempDir()})
 	if code != 0 {
 		t.Fatalf("sync pull exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -83,7 +83,7 @@ func TestSyncPullPushAndRunWithLocalBareRemote(t *testing.T) {
 	runGit(t, vault, "add", "notes/local.md")
 	runGit(t, vault, "commit", "-m", "local committed change")
 	writeFixtureFile(t, filepath.Join(vault, "scratch.txt"), "do not stage\n")
-	code, stdout, stderr = runTestCLI([]string{"sync", "push", "--vault", vault, "--remote", "origin", "--branch", "main"}, map[string]string{"HOME": t.TempDir()})
+	code, stdout, stderr = runTestCLI(t, []string{"sync", "push", "--vault", vault, "--remote", "origin", "--branch", "main"}, map[string]string{"HOME": t.TempDir()})
 	if code != 0 {
 		t.Fatalf("sync push exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -93,7 +93,7 @@ func TestSyncPullPushAndRunWithLocalBareRemote(t *testing.T) {
 
 	writeFixtureFile(t, filepath.Join(vault, "memory", "run.md"), "allowed run change\n")
 	writeFixtureFile(t, filepath.Join(vault, "unrelated.txt"), "must stay untracked\n")
-	code, stdout, stderr = runTestCLI([]string{"sync", "run", "--vault", vault, "--remote", "origin", "--branch", "main"}, map[string]string{"HOME": t.TempDir()})
+	code, stdout, stderr = runTestCLI(t, []string{"sync", "run", "--vault", vault, "--remote", "origin", "--branch", "main"}, map[string]string{"HOME": t.TempDir()})
 	if code != 0 {
 		t.Fatalf("sync run exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -123,7 +123,7 @@ func TestSyncRunUsesLockAndCleansUp(t *testing.T) {
 		t.Fatalf("write lock: %v", err)
 	}
 
-	code, _, stderr := runTestCLI([]string{"sync", "run", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
+	code, _, stderr := runTestCLI(t, []string{"sync", "run", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
 	if code == 0 {
 		t.Fatalf("sync run unexpectedly succeeded while lock existed")
 	}
@@ -135,7 +135,7 @@ func TestSyncRunUsesLockAndCleansUp(t *testing.T) {
 	if err := os.Remove(lockPath); err != nil {
 		t.Fatalf("remove test lock: %v", err)
 	}
-	code, stdout, stderr := runTestCLI([]string{"sync", "run", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
+	code, stdout, stderr := runTestCLI(t, []string{"sync", "run", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
 	if code != 0 {
 		t.Fatalf("clean sync run exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -156,7 +156,7 @@ func TestSyncRunRefusesPreStagedDisallowedPaths(t *testing.T) {
 	writeFixtureFile(t, filepath.Join(vault, "scratch.txt"), "must not commit\n")
 	runGit(t, vault, "add", "scratch.txt")
 
-	code, _, stderr := runTestCLI([]string{"sync", "run", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
+	code, _, stderr := runTestCLI(t, []string{"sync", "run", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
 	if code == 0 {
 		t.Fatalf("sync run unexpectedly succeeded with pre-staged disallowed path")
 	}
@@ -181,7 +181,7 @@ func TestSyncPushRefusesMissingAndNonFastForwardUpstream(t *testing.T) {
 		initializeGitVault(t, vault)
 		runGit(t, vault, "remote", "add", "origin", remote)
 
-		code, _, stderr := runTestCLI([]string{"sync", "push", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
+		code, _, stderr := runTestCLI(t, []string{"sync", "push", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
 		if code == 0 {
 			t.Fatalf("sync push unexpectedly created a missing upstream")
 		}
@@ -204,7 +204,7 @@ func TestSyncPushRefusesMissingAndNonFastForwardUpstream(t *testing.T) {
 		runGit(t, vault, "add", "notes/local.md")
 		runGit(t, vault, "commit", "-m", "local diverged")
 
-		code, _, stderr := runTestCLI([]string{"sync", "push", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
+		code, _, stderr := runTestCLI(t, []string{"sync", "push", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
 		if code == 0 {
 			t.Fatalf("sync push unexpectedly succeeded with non-fast-forward remote")
 		}
@@ -226,7 +226,7 @@ func TestSyncRunConflictRecoveryDoesNotSpamBranches(t *testing.T) {
 	runGit(t, remoteWork, "push", "origin", "main")
 
 	writeFixtureFile(t, filepath.Join(vault, "notes", "conflict.md"), "local conflict\n")
-	code, stdout, stderr := runTestCLI([]string{"sync", "run", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
+	code, stdout, stderr := runTestCLI(t, []string{"sync", "run", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
 	if code == 0 {
 		t.Fatalf("sync run unexpectedly succeeded despite conflict; stdout=%q", stdout)
 	}
@@ -240,7 +240,7 @@ func TestSyncRunConflictRecoveryDoesNotSpamBranches(t *testing.T) {
 		t.Fatalf("conflict branch count after first failure = %d, want 1\nbranches:\n%s", firstCount, gitOutput(t, vault, "branch", "--list"))
 	}
 
-	code, stdout, stderr = runTestCLI([]string{"sync", "run", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
+	code, stdout, stderr = runTestCLI(t, []string{"sync", "run", "--vault", vault}, map[string]string{"HOME": t.TempDir()})
 	if code == 0 {
 		t.Fatalf("second sync run unexpectedly succeeded despite conflict; stdout=%q", stdout)
 	}
@@ -259,7 +259,7 @@ func TestMigratedKnowledgeFixtureSyncsWithLegacyEnvAndLocalBareRemote(t *testing
 	runGit(t, root, "init", "--bare", remote)
 	t.Logf("migrated knowledge sync uses local bare remote: %s", remote)
 
-	code, _, stderr := runTestCLI([]string{"import", "--from", knowledge, "--vault", vault, "--apply"}, map[string]string{"HOME": t.TempDir()})
+	code, _, stderr := runTestCLI(t, []string{"import", "--from", knowledge, "--vault", vault, "--apply"}, map[string]string{"HOME": t.TempDir()})
 	if code != 0 {
 		t.Fatalf("import --apply exit code = %d, stderr = %q", code, stderr)
 	}
@@ -273,14 +273,14 @@ func TestMigratedKnowledgeFixtureSyncsWithLegacyEnvAndLocalBareRemote(t *testing
 		"KNOWLEDGE_REMOTE": "origin",
 		"KNOWLEDGE_BRANCH": "main",
 	}
-	code, stdout, stderr := runTestCLI([]string{"sync", "status"}, env)
+	code, stdout, stderr := runTestCLI(t, []string{"sync", "status"}, env)
 	if code != 0 {
 		t.Fatalf("legacy sync status exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "Status: clean") {
 		t.Fatalf("legacy sync status did not report clean migrated vault:\n%s", stdout)
 	}
-	code, stdout, stderr = runTestCLI([]string{"sync", "run"}, env)
+	code, stdout, stderr = runTestCLI(t, []string{"sync", "run"}, env)
 	if code != 0 {
 		t.Fatalf("legacy sync run exit code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
