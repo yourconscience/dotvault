@@ -1,0 +1,16 @@
+{
+  "triggers": [
+    {
+      "prompt": "Set up a private dotvault layout with notes, memory, profile, and sessions directories."
+    },
+    {
+      "prompt": "Explain how dotvault maps legacy ai directory content into memory during migration."
+    },
+    {
+      "prompt": "Design a hook payload flow for dotvault session-start, stop, and session-end events."
+    },
+    {
+      "prompt": "Describe a provider-agnostic dotvault search interface with index, search, and expand operations."
+    }
+  ]
+}
