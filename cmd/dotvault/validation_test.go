@@ -62,13 +62,20 @@ func TestDocumentationMatchesImplementedCLIBehavior(t *testing.T) {
 
 func TestPublicRepoPrivacyBoundaries(t *testing.T) {
 	root := repoRoot(t)
-	privateWorkspace := "/Users/" + "conscience/Workspace/"
 	forbidden := []string{
 		"100" + ".73.153.20",
 		"/srv/git/" + "knowledge.git",
-		privateWorkspace + "knowledge",
-		privateWorkspace + "vault",
 		".claude/" + "projects",
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		home = filepath.Clean(home)
+		if home != "." && home != string(os.PathSeparator) {
+			forbidden = append(forbidden,
+				home,
+				filepath.Join(home, "Workspace", "knowledge"),
+				filepath.Join(home, "Workspace", "vault"),
+			)
+		}
 	}
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
