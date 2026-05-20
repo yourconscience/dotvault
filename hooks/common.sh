@@ -1,7 +1,29 @@
 #!/bin/sh
 set -eu
 
-DOTVAULT_HOOK_DIR=${DOTVAULT_HOOK_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}
+dotvault_script_dir() {
+  dotvault_script_path=$1
+  case $dotvault_script_path in
+    */*)
+      dotvault_script_dir=${dotvault_script_path%/*}
+      if [ -z "$dotvault_script_dir" ]; then
+        dotvault_script_dir=/
+      fi
+      ;;
+    *)
+      dotvault_script_dir=.
+      ;;
+  esac
+
+  case $dotvault_script_dir in
+    /*|./*|../*|.) ;;
+    *) dotvault_script_dir=./$dotvault_script_dir ;;
+  esac
+
+  CDPATH= cd "$dotvault_script_dir" && pwd
+}
+
+DOTVAULT_HOOK_DIR=${DOTVAULT_HOOK_DIR:-$(dotvault_script_dir "$0")}
 
 dotvault_python() {
   if command -v python3.11 >/dev/null 2>&1; then
