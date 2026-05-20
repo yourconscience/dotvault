@@ -1,5 +1,7 @@
 # dotvault
 
+> **Early / Experimental** -- This project is under active development. APIs, CLI commands, and vault format may change without notice.
+
 `dotvault` is a public, privacy-first toolkit for defining a personal vault format, hook contracts, search contracts, and future CLI workflows.
 
 This repository is the public tooling checkout. It is not a private vault and must not contain private notes, memories, profiles, sessions, transcripts, credentials, or machine-local operational details.
