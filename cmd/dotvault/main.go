@@ -7,11 +7,22 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
 var vaultDirectories = []string{"notes", "memory", "profile", "sessions"}
+
+var importMappings = []struct {
+	source string
+	dest   string
+}{
+	{source: "ai", dest: "memory"},
+	{source: "notes", dest: "notes"},
+	{source: "profile", dest: "profile"},
+	{source: "sessions", dest: "sessions"},
+}
 
 type envLookup func(string) (string, bool)
 
@@ -49,9 +60,9 @@ func run(args []string, getenv envLookup, stdout, stderr io.Writer) int {
 	case "init":
 		return runInit(args[1:], getenv, stdout, stderr)
 	case "import":
-		return runPlannedCommand("import", args[1:], printImportHelp, stdout, stderr)
+		return runImport(args[1:], getenv, stdout, stderr)
 	case "export":
-		return runPlannedCommand("export", args[1:], printExportHelp, stdout, stderr)
+		return runExport(args[1:], getenv, stdout, stderr)
 	case "sync":
 		return runPlannedCommand("sync", args[1:], printSyncHelp, stdout, stderr)
 	default:
@@ -125,6 +136,106 @@ func runInit(args []string, getenv envLookup, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runImport(args []string, getenv envLookup, stdout, stderr io.Writer) int {
+	var fromFlag string
+	var vaultFlag string
+	var apply bool
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&fromFlag, "from", "", "knowledge-style source path")
+	fs.StringVar(&vaultFlag, "vault", "", "dotvault destination path")
+	fs.BoolVar(&apply, "apply", false, "apply the planned migration; default is dry-run")
+	fs.Usage = func() {
+		printImportHelp(stdout)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "dotvault import: unexpected argument %q\n", fs.Arg(0))
+		return 2
+	}
+
+	sourcePath, err := resolveImportSourcePath(fromFlag, getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "dotvault import: %v\n", err)
+		return 2
+	}
+	vaultPath, err := resolveVaultPath(vaultFlag, getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "dotvault import: %v\n", err)
+		return 2
+	}
+
+	plan, err := planImport(sourcePath, vaultPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "dotvault import: %v\n", err)
+		return 1
+	}
+	if !apply {
+		printImportPlan(stdout, plan)
+		return 0
+	}
+	if err := applyImportPlan(plan); err != nil {
+		fmt.Fprintf(stderr, "dotvault import: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Applied import from %s to %s\n", plan.sourcePath, plan.vaultPath)
+	for _, item := range plan.items {
+		fmt.Fprintf(stdout, "Copied %s/ -> %s/ (%d files)\n", item.sourceDir, item.destDir, item.fileCount)
+	}
+	return 0
+}
+
+func runExport(args []string, getenv envLookup, stdout, stderr io.Writer) int {
+	var vaultFlag string
+	var outFlag string
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&vaultFlag, "vault", "", "dotvault source path")
+	fs.StringVar(&outFlag, "out", "", "safe output directory")
+	fs.Usage = func() {
+		printExportHelp(stdout)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "dotvault export: unexpected argument %q\n", fs.Arg(0))
+		return 2
+	}
+
+	vaultPath, err := resolveVaultPath(vaultFlag, getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "dotvault export: %v\n", err)
+		return 2
+	}
+	outPath, err := resolveRequiredPath(outFlag, "--out", getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "dotvault export: %v\n", err)
+		return 2
+	}
+	if err := validateExportInputs(vaultPath, outPath); err != nil {
+		fmt.Fprintf(stderr, "dotvault export: %v\n", err)
+		return 1
+	}
+	if err := writeTemplateExport(outPath); err != nil {
+		fmt.Fprintf(stderr, "dotvault export: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Exported public template content to %s\n", outPath)
+	fmt.Fprintln(stdout, "Private notes, memory, profile, and sessions were not copied.")
+	return 0
+}
+
 func runPlannedCommand(name string, args []string, printHelp func(io.Writer), stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -159,6 +270,401 @@ func runPlannedCommand(name string, args []string, printHelp func(io.Writer), st
 
 	fmt.Fprintf(stderr, "dotvault %s is planned for a later milestone; use --help for the safety contract.\n", name)
 	return 2
+}
+
+type importPlan struct {
+	sourcePath string
+	vaultPath  string
+	items      []importPlanItem
+}
+
+type importPlanItem struct {
+	sourceDir string
+	destDir   string
+	fileCount int
+}
+
+func planImport(sourcePath, vaultPath string) (importPlan, error) {
+	if err := validateImportSource(sourcePath); err != nil {
+		return importPlan{}, err
+	}
+	realSource, err := filepath.EvalSymlinks(sourcePath)
+	if err != nil {
+		return importPlan{}, fmt.Errorf("resolve source %s: %w", sourcePath, err)
+	}
+	realVault, err := resolvedImportDestinationPath(vaultPath)
+	if err != nil {
+		return importPlan{}, err
+	}
+	if sameOrInside(vaultPath, sourcePath) || sameOrInside(realVault, realSource) {
+		return importPlan{}, fmt.Errorf("refusing destination %s inside source %s; import must preserve the source fixture", vaultPath, sourcePath)
+	}
+	if sameOrInside(sourcePath, vaultPath) || sameOrInside(realSource, realVault) {
+		return importPlan{}, fmt.Errorf("refusing overlapping source %s and destination %s", sourcePath, vaultPath)
+	}
+	if err := validateImportDestination(vaultPath); err != nil {
+		return importPlan{}, err
+	}
+
+	plan := importPlan{sourcePath: sourcePath, vaultPath: vaultPath}
+	for _, mapping := range importMappings {
+		sourceDirPath := filepath.Join(sourcePath, mapping.source)
+		info, err := os.Lstat(sourceDirPath)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return importPlan{}, fmt.Errorf("inspect source %s/: %w", mapping.source, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return importPlan{}, fmt.Errorf("refusing symlink source directory %s", sourceDirPath)
+		}
+		if !info.IsDir() {
+			return importPlan{}, fmt.Errorf("source %s is not a directory", sourceDirPath)
+		}
+		count, err := countRegularFilesAndRefuseSymlinks(sourceDirPath)
+		if err != nil {
+			return importPlan{}, err
+		}
+		plan.items = append(plan.items, importPlanItem{
+			sourceDir: mapping.source,
+			destDir:   mapping.dest,
+			fileCount: count,
+		})
+	}
+	if len(plan.items) == 0 {
+		return importPlan{}, fmt.Errorf("source %s has no importable ai/, notes/, profile/, or sessions/ directories", sourcePath)
+	}
+	return plan, nil
+}
+
+func validateImportSource(sourcePath string) error {
+	info, err := os.Lstat(sourcePath)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("missing source %s", sourcePath)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect source %s: %w", sourcePath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing symlink source %s", sourcePath)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("source %s is not a directory", sourcePath)
+	}
+	if err := refuseDirtyGitSource(sourcePath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateImportDestination(vaultPath string) error {
+	parent := filepath.Dir(vaultPath)
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return fmt.Errorf("destination parent %s is not available: %w", parent, err)
+	}
+	if !parentInfo.IsDir() {
+		return fmt.Errorf("destination parent %s is not a directory", parent)
+	}
+
+	info, err := os.Lstat(vaultPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect destination %s: %w", vaultPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing symlink destination %s", vaultPath)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("refusing non-directory destination %s", vaultPath)
+	}
+	empty, err := isEmptyDir(vaultPath)
+	if err != nil {
+		return fmt.Errorf("inspect destination %s: %w", vaultPath, err)
+	}
+	if !empty {
+		return fmt.Errorf("refusing non-empty destination %s to avoid duplicate or overwrite hazards", vaultPath)
+	}
+	return nil
+}
+
+func refuseDirtyGitSource(sourcePath string) error {
+	if _, err := os.Lstat(filepath.Join(sourcePath, ".git")); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect source git metadata: %w", err)
+	}
+	cmd := exec.Command("git", "-C", sourcePath, "status", "--porcelain")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("inspect git source %s: %w", sourcePath, err)
+	}
+	if strings.TrimSpace(string(output)) != "" {
+		return fmt.Errorf("refusing dirty git source %s; commit, stash, or clean changes before import", sourcePath)
+	}
+	return nil
+}
+
+func printImportPlan(w io.Writer, plan importPlan) {
+	fmt.Fprintf(w, "Dry-run import plan (no filesystem changes)\n")
+	fmt.Fprintf(w, "Source: %s\n", plan.sourcePath)
+	fmt.Fprintf(w, "Destination: %s\n", plan.vaultPath)
+	for _, item := range plan.items {
+		fmt.Fprintf(w, "Plan: %s/ -> %s/ (%d files)\n", item.sourceDir, item.destDir, item.fileCount)
+	}
+	fmt.Fprintln(w, "Pass --apply to execute this migration after reviewing the plan.")
+}
+
+func applyImportPlan(plan importPlan) error {
+	staging, err := os.MkdirTemp(filepath.Dir(plan.vaultPath), "."+filepath.Base(plan.vaultPath)+".dotvault-import-")
+	if err != nil {
+		return fmt.Errorf("create staging destination: %w", err)
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(staging)
+		}
+	}()
+
+	for _, dir := range vaultDirectories {
+		if err := os.MkdirAll(filepath.Join(staging, dir), 0o700); err != nil {
+			return fmt.Errorf("stage %s/: %w", dir, err)
+		}
+	}
+	for _, item := range plan.items {
+		sourceDir := filepath.Join(plan.sourcePath, item.sourceDir)
+		destDir := filepath.Join(staging, item.destDir)
+		if err := copyTreeContents(sourceDir, destDir); err != nil {
+			return fmt.Errorf("copy %s/ to %s/: %w", item.sourceDir, item.destDir, err)
+		}
+	}
+
+	if _, err := os.Lstat(plan.vaultPath); err == nil {
+		if err := os.Remove(plan.vaultPath); err != nil {
+			return fmt.Errorf("remove empty destination before finalizing: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect destination before finalizing: %w", err)
+	}
+	if err := os.Rename(staging, plan.vaultPath); err != nil {
+		return fmt.Errorf("finalize destination: %w", err)
+	}
+	cleanup = false
+	return nil
+}
+
+func countRegularFilesAndRefuseSymlinks(root string) (int, error) {
+	count := 0
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing symlink in source tree %s", path)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing non-regular source entry %s", path)
+		}
+		if !d.IsDir() {
+			count++
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("inspect source tree %s: %w", root, err)
+	}
+	return count, nil
+}
+
+func copyTreeContents(sourceDir, destDir string) error {
+	return filepath.WalkDir(sourceDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(sourceDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing symlink %s", path)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destDir, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing non-regular source entry %s", path)
+		}
+		return copyFile(path, target, info.Mode().Perm())
+	})
+}
+
+func copyFile(source, dest string, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		return err
+	}
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
+
+func validateExportInputs(vaultPath, outPath string) error {
+	info, err := os.Lstat(vaultPath)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("missing vault %s", vaultPath)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect vault %s: %w", vaultPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing symlink vault %s", vaultPath)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("vault %s is not a directory", vaultPath)
+	}
+	if sameOrInside(outPath, vaultPath) {
+		return fmt.Errorf("refusing output %s inside vault %s", outPath, vaultPath)
+	}
+	if sameOrInside(vaultPath, outPath) {
+		return fmt.Errorf("refusing output %s that contains vault %s", outPath, vaultPath)
+	}
+	realVault, err := filepath.EvalSymlinks(vaultPath)
+	if err != nil {
+		return fmt.Errorf("resolve vault %s: %w", vaultPath, err)
+	}
+	realOut, err := resolvedOutputPath(outPath)
+	if err != nil {
+		return err
+	}
+	if sameOrInside(realOut, realVault) {
+		return fmt.Errorf("refusing output %s because it resolves inside vault %s", outPath, vaultPath)
+	}
+	if sameOrInside(realVault, realOut) {
+		return fmt.Errorf("refusing output %s because it resolves above vault %s", outPath, vaultPath)
+	}
+
+	parent := filepath.Dir(outPath)
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return fmt.Errorf("output parent %s is not available: %w", parent, err)
+	}
+	if !parentInfo.IsDir() {
+		return fmt.Errorf("output parent %s is not a directory", parent)
+	}
+
+	outInfo, err := os.Lstat(outPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect output %s: %w", outPath, err)
+	}
+	if outInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing symlink output %s", outPath)
+	}
+	if !outInfo.IsDir() {
+		return fmt.Errorf("refusing non-directory output %s", outPath)
+	}
+	empty, err := isEmptyDir(outPath)
+	if err != nil {
+		return fmt.Errorf("inspect output %s: %w", outPath, err)
+	}
+	if !empty {
+		return fmt.Errorf("refusing non-empty output %s", outPath)
+	}
+	return nil
+}
+
+func writeTemplateExport(outPath string) error {
+	staging, err := os.MkdirTemp(filepath.Dir(outPath), "."+filepath.Base(outPath)+".dotvault-export-")
+	if err != nil {
+		return fmt.Errorf("create staging output: %w", err)
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(staging)
+		}
+	}()
+
+	files := map[string]string{
+		"README.md": "# dotvault private vault\n\nThis is a starter template for a private dotvault vault. Store real private content only in your private vault, not in the public tooling checkout.\n",
+		"AGENTS.md": "# Vault Agent Contract\n\nAgents may read and write vault content under notes/, memory/, profile/, and sessions/ according to the user's local policy.\n",
+	}
+	for rel, content := range files {
+		if err := writeTextFile(filepath.Join(staging, rel), content, 0o644); err != nil {
+			return err
+		}
+	}
+	for _, dir := range vaultDirectories {
+		if err := os.MkdirAll(filepath.Join(staging, dir), 0o700); err != nil {
+			return fmt.Errorf("create template %s/: %w", dir, err)
+		}
+		if err := writeTextFile(filepath.Join(staging, dir, ".gitkeep"), "", 0o644); err != nil {
+			return err
+		}
+	}
+
+	if _, err := os.Lstat(outPath); err == nil {
+		if err := os.Remove(outPath); err != nil {
+			return fmt.Errorf("remove empty output before finalizing: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect output before finalizing: %w", err)
+	}
+	if err := os.Rename(staging, outPath); err != nil {
+		return fmt.Errorf("finalize output: %w", err)
+	}
+	cleanup = false
+	return nil
+}
+
+func writeTextFile(path, content string, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create parent for %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), mode); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+func isEmptyDir(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, err
+	}
+	return len(entries) == 0, nil
 }
 
 func initializeVault(vaultPath string) error {
@@ -265,6 +771,32 @@ func resolveVaultPath(explicit string, getenv envLookup) (string, error) {
 	return expandAndAbs(vaultPath, getenv)
 }
 
+func resolveImportSourcePath(explicit string, getenv envLookup) (string, error) {
+	sourcePath := strings.TrimSpace(explicit)
+	if sourcePath == "" {
+		if envPath, ok := getenv("KNOWLEDGE_DIR"); ok {
+			sourcePath = strings.TrimSpace(envPath)
+		}
+	}
+	if sourcePath == "" {
+		if envPath, ok := getenv("KNOWLEDGE_REPO"); ok {
+			sourcePath = strings.TrimSpace(envPath)
+		}
+	}
+	if sourcePath == "" {
+		return "", errors.New("missing source path; pass --from <path>")
+	}
+	return expandAndAbs(sourcePath, getenv)
+}
+
+func resolveRequiredPath(explicit, flagName string, getenv envLookup) (string, error) {
+	path := strings.TrimSpace(explicit)
+	if path == "" {
+		return "", fmt.Errorf("missing path; pass %s <path>", flagName)
+	}
+	return expandAndAbs(path, getenv)
+}
+
 func expandAndAbs(path string, getenv envLookup) (string, error) {
 	expanded := path
 	if path == "~" || strings.HasPrefix(path, "~/") {
@@ -283,6 +815,42 @@ func expandAndAbs(path string, getenv envLookup) (string, error) {
 		return "", err
 	}
 	return filepath.Clean(abs), nil
+}
+
+func sameOrInside(path, parent string) bool {
+	rel, err := filepath.Rel(parent, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func resolvedImportDestinationPath(path string) (string, error) {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved), nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("resolve destination %s: %w", path, err)
+	}
+	parent := filepath.Dir(path)
+	realParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", fmt.Errorf("resolve destination parent %s: %w", parent, err)
+	}
+	return filepath.Clean(filepath.Join(realParent, filepath.Base(path))), nil
+}
+
+func resolvedOutputPath(path string) (string, error) {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved), nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("resolve output %s: %w", path, err)
+	}
+	parent := filepath.Dir(path)
+	realParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", fmt.Errorf("resolve output parent %s: %w", parent, err)
+	}
+	return filepath.Clean(filepath.Join(realParent, filepath.Base(path))), nil
 }
 
 func symlinkTargetAbs(linkPath, target string) (string, error) {
@@ -363,7 +931,7 @@ Flags:
 
 Environment:
   DOTVAULT_PATH may provide the destination vault path.
-  KNOWLEDGE_DIR or KNOWLEDGE_REPO may provide a legacy source path in later milestones.
+  KNOWLEDGE_DIR or KNOWLEDGE_REPO may provide a legacy source path when --from is omitted.
 
 Safety:
   Default behavior is dry-run and preserves the source without filesystem changes.
